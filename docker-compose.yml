@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+
+  api:
+    build: .
+    environment:
+      - SERVICE=api
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+    volumes:
+      - ./docs:/app/docs
+      - ./chroma_db:/app/chroma_db
+
+  worker:
+    build: .
+    environment:
+      - SERVICE=worker
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    depends_on:
+      - redis
+    volumes:
+      - ./docs:/app/docs
+      - ./chroma_db:/app/chroma_db
+    deploy:
+      replicas: 2          # ← 这里改成3+ 就是真正的分布式多节点
+
+  streamlit:
+    build: .
+    environment:
+      - SERVICE=streamlit
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    ports:
+      - "8501:8501"
+    depends_on:
+      - api
+    volumes:
+      - ./docs:/app/docs
+      - ./chroma_db:/app/chroma_db
