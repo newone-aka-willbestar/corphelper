@@ -42,7 +42,8 @@ workflow.add_edge("planner", "researcher")
 workflow.add_edge("researcher", "reviewer")
 
 def route_after_review(state: ResearchState):
-    if state.get("review_feedback") == "合格" or state.get("steps", 0) >= 3:
+    # "合格" 正常结束；steps >= 6 是兜底安全阀（最多允许 2 次完整迭代）
+    if state.get("review_feedback") == "合格" or state.get("steps", 0) >= 6:
         return "end"
     return "researcher"
 

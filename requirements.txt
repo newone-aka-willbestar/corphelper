@@ -1,25 +1,26 @@
-# --- Agent 核心框架 ---
-# LangGraph 用于构建带循环（Cycle）和状态管理（State）的多智能体协作流
-langgraph>=0.2.0
-# LangChain 核心协议，支持 0.3.x 最新生态
+# 核心框架
+langgraph==1.1.3
 langchain-core>=0.3.0
-# 用于通过 OpenAI 兼容接口调用 DeepSeek-V3 或 Qwen2.5
-langchain-openai>=0.2.0
+langchain-openai==1.1.12
+langchain-community==0.4.1
 
-# --- 环境管理与配置 ---
-# 解析 .env 文件中的 API Key 和环境变量
+# 后端
+fastapi==0.135.2
+uvicorn[standard]==0.42.0
+gunicorn>=22.0.0
+pydantic>=2.0.0
 python-dotenv>=1.0.0
 
-# --- 前端展示层 ---
-# 快速构建 Agent 决策链路的可视化看板
-streamlit>=1.30.0
+# 缓存
+redis>=5.0.0
 
-# --- 网络与辅助工具 ---
-# 处理异步网络请求（若后续接入真实搜索 API 如 Tavily 时需要）
+# 重试
+tenacity>=8.0.0
+
+# 搜索
+langchain-tavily>=0.2.0
 httpx>=0.27.0
-tavily-python
-langchain-community
 
-# --- 后端接口层 ---
-fastapi
-uvicorn[standard]
+# 前端
+streamlit==1.55.0
+requests>=2.32.0

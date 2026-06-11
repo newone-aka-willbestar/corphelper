@@ -1,7 +1,12 @@
-import streamlit as st
+import os
+
 import requests
+import streamlit as st
 import time
-import json
+
+BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
+_API_KEY    = os.getenv("API_KEY", "")
+_HEADERS    = {"X-API-Key": _API_KEY} if _API_KEY else {}
 
 # 1. 页面配置与专业主题
 st.set_page_config(
@@ -57,77 +62,101 @@ if st.button("🚀 启动多智能体协作分析"):
         st.warning("请先输入调研主题")
         st.stop()
 
-    # 创建状态追踪器
+    # ── 第一步：提交任务，立即拿到 job_id ────────────────
+    try:
+        resp = requests.post(
+            f"{BACKEND_URL}/research",
+            json={"topic": topic},
+            headers=_HEADERS,
+            timeout=10
+        )
+        resp.raise_for_status()
+    except requests.exceptions.ConnectionError:
+        st.error("无法连接到后端，请确认 FastAPI 服务已启动。")
+        st.stop()
+    except requests.exceptions.HTTPError as e:
+        st.error(f"提交失败：{e.response.status_code} — {e.response.json().get('detail', '')}")
+        st.stop()
+    except Exception as e:
+        st.error(f"请求异常：{e}")
+        st.stop()
+
+    job_id = resp.json()["job_id"]
+    start_time = time.time()
+
+    # 各 agent 阶段对应的提示文案
+    STAGE_LABELS = {
+        "waiting":    "⏳ 等待调度...",
+        "pending":    "⏳ 等待调度...",
+        "planner":    "📝 **Planner**：正在解析主题，拆解调研方向...",
+        "researcher": "🌐 **Researcher**：正在调用 Tavily 检索实时数据...",
+        "reviewer":   "🧐 **Reviewer**：正在审核报告质量...",
+    }
+
+    # ── 第二步：轮询进度，每 2 秒刷新一次 ───────────────
+    data = None
     with st.status("🛸 Agent 团队正在联合作业...", expanded=True) as status:
-        # 步骤 1: Planner
-        st.write("📝 **Planner**: 正在解析需求并拆解调研大纲...")
-        time.sleep(1.5)  # 视觉缓冲
-        
-        # 发送请求
-        try:
-            start_time = time.time()
-            response = requests.post(
-                "http://127.0.0.1:8000/research",
-                json={"topic": topic},
-                timeout=180
-            )
-            
-            if response.status_code == 200:
-                # 步骤 2: Researcher
-                st.write("🌐 **Researcher**: 正在访问 Tavily 检索实时市场数据...")
-                time.sleep(1.5)
-                
-                # 步骤 3: Reviewer (模拟回溯过程，这是面试亮点)
-                st.write("🧐 **Reviewer**: 正在审核初稿深度并进行逻辑纠错...")
-                time.sleep(2)
-                
-                data = response.json()
-                end_time = time.time()
-                
-                # 标记完成
-                status.update(label="✨ 调研任务已圆满完成！", state="complete", expanded=False)
-                st.toast("分析成功！", icon='✅')
+        stage_placeholder = st.empty()
+        last_stage = ""
 
-                # 4. 结果展示区（使用 Tabs）
-                st.markdown("### 📊 调研分析结果")
-                tab1, tab2, tab3 = st.tabs(["📝 深度研报全文", "📋 调研大纲", "📚 搜索素材摘要"])
+        while True:
+            try:
+                poll = requests.get(f"{BACKEND_URL}/research/{job_id}", headers=_HEADERS, timeout=10)
+                poll_data = poll.json()
+            except Exception as e:
+                status.update(label="❌ 轮询失败", state="error")
+                st.error(f"轮询出错：{e}")
+                st.stop()
 
-                with tab1:
-                    st.markdown(f'<div class="report-card">', unsafe_allow_html=True)
-                    st.markdown(data["report"])
-                    st.markdown('</div>', unsafe_allow_html=True)
-                    
-                    # 结果下载
-                    st.download_button(
-                        label="📥 下载 Markdown 报告",
-                        data=data["report"],
-                        file_name=f"{topic}_调研报告.md",
-                        mime="text/markdown"
-                    )
+            current_stage = poll_data.get("stage", poll_data.get("status", ""))
+            if current_stage != last_stage and current_stage in STAGE_LABELS:
+                stage_placeholder.write(STAGE_LABELS[current_stage])
+                last_stage = current_stage
 
-                with tab2:
-                    st.success("Planner 生成的调研逻辑链：")
-                    for i, p in enumerate(data["plan"], 1):
-                        st.write(f"**{i}.** {p}")
+            if poll_data["status"] == "done":
+                data = poll_data
+                break
+            if poll_data["status"] == "error":
+                status.update(label="❌ Agent 执行失败", state="error")
+                st.error(f"错误详情：{poll_data.get('error', '未知错误')}")
+                st.stop()
 
-                with tab3:
-                    st.info("以下为 Researcher 采集并由 LLM 总结的原始素材：")
-                    for snippet in data.get("content_snippets", []):
-                        with st.expander("查看详情"):
-                            st.write(snippet)
-                
-                # 底部运行数据报告
-                st.write("---")
-                cols = st.columns(4)
-                cols[0].write(f"⏱️ **总耗时**: {int(end_time - start_time)}s")
-                cols[1].write(f"🔄 **迭代次数**: {data['steps']} 轮")
-                cols[2].write(f"📏 **字数统计**: {len(data['report'])} 字")
-                cols[3].write(f"🔗 **数据源**: Tavily Web Search")
+            time.sleep(2)
 
-            else:
-                status.update(label="❌ 后端处理异常", state="error")
-                st.error(f"错误码: {response.status_code} | 详情: {response.text}")
+        end_time = time.time()
+        stage_placeholder.write("✅ 所有 Agent 节点执行完毕")
+        status.update(label="✨ 调研任务已圆满完成！", state="complete", expanded=False)
+        st.toast("分析成功！", icon='✅')
 
-        except Exception as e:
-            status.update(label="❌ 连接失败", state="error")
-            st.error(f"无法连接到 FastAPI 服务，请检查后端是否已启动。")
+    # ── 第三步：展示结果 ─────────────────────────────────
+    st.markdown("### 📊 调研分析结果")
+    tab1, tab2, tab3 = st.tabs(["📝 深度研报全文", "📋 调研大纲", "📚 搜索素材摘要"])
+
+    with tab1:
+        st.markdown('<div class="report-card">', unsafe_allow_html=True)
+        st.markdown(data["report"])
+        st.markdown('</div>', unsafe_allow_html=True)
+        st.download_button(
+            label="📥 下载 Markdown 报告",
+            data=data["report"],
+            file_name=f"{topic}_调研报告.md",
+            mime="text/markdown"
+        )
+
+    with tab2:
+        st.success("Planner 生成的调研逻辑链：")
+        for i, p in enumerate(data["plan"], 1):
+            st.write(f"**{i}.** {p}")
+
+    with tab3:
+        st.info("以下为 Researcher 采集并由 LLM 总结的原始素材：")
+        for snippet in data.get("content_snippets", []):
+            with st.expander("查看详情"):
+                st.write(snippet)
+
+    st.write("---")
+    cols = st.columns(4)
+    cols[0].write(f"⏱️ **总耗时**: {int(end_time - start_time)}s")
+    cols[1].write(f"🔄 **迭代次数**: {data['steps']} 轮")
+    cols[2].write(f"📏 **字数统计**: {len(data['report'])} 字")
+    cols[3].write(f"🔗 **数据源**: Tavily Web Search")
