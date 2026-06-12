@@ -100,6 +100,7 @@ def test_reviewer_rejects_when_score_below_threshold():
         result = asyncio.run(reviewer_node(state))
 
     assert result["review_feedback"] == "缺少数据支撑，请补充统计数字"
+    assert result["review_score"] == 4
     assert "report" not in result
     assert result["steps"] == 3
 
@@ -117,6 +118,7 @@ def test_reviewer_generates_report_when_score_passes():
 
     assert result["review_feedback"] == "合格"
     assert result["report"] == "最终研报正文"
+    assert result["review_score"] == 9
     assert result["steps"] == 5
 
 
@@ -135,6 +137,7 @@ def test_reviewer_force_writes_at_iteration_cap():
     eval_mock.assert_not_awaited()
     assert result["report"] == "兜底研报"
     assert result["review_feedback"] == "合格"
+    assert "review_score" not in result   # 未评审，不产生分数
 
 
 def test_reviewer_passes_on_unparseable_verdict():
@@ -151,3 +154,4 @@ def test_reviewer_passes_on_unparseable_verdict():
 
     assert result["review_feedback"] == "合格"
     assert result["report"] == "研报正文"
+    assert "review_score" not in result   # 解析失败不记录伪造分数

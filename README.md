@@ -134,7 +134,7 @@ curl -X POST http://localhost:8000/research \
 
 # 轮询结果
 curl http://localhost:8000/research/<job_id>
-# 完成后返回 report、plan、迭代轮次 steps、耗时 duration_ms
+# 完成后返回 report、plan、迭代轮次 steps、评审评分 review_score（0-10）、耗时 duration_ms
 ```
 
 > 若设置了 `API_KEY` 环境变量，以上请求需携带请求头 `X-API-Key: <你的密钥>`。

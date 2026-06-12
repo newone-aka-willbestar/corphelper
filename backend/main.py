@@ -194,6 +194,7 @@ async def _run_research(job_id: str, topic: str):
             steps=accumulated.get("steps", 0),
             plan=accumulated.get("plan", []),
             content_snippets=accumulated.get("content", [])[-2:],
+            review_score=accumulated.get("review_score"),
             duration_ms=duration_ms,
         )
         logger.info("任务完成，耗时 %dms", duration_ms, extra={"job_id": job_id, "duration_ms": duration_ms})
@@ -232,6 +233,7 @@ async def get_research(job_id: str):
             "steps":            job.get("steps", 0),
             "plan":             job.get("plan", []),
             "content_snippets": job.get("content_snippets", []),
+            "review_score":     job.get("review_score"),
             "duration_ms":      job.get("duration_ms", 0),
         }
     if job["status"] == "error":

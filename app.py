@@ -33,18 +33,10 @@ with st.sidebar:
     st.info("当前引擎: DeepSeek-V3 + Tavily Search")
     
     st.divider()
-    st.subheader("📊 运行统计 (估算)")
-    metric_col1, metric_col2 = st.columns(2)
-    with metric_col1:
-        st.metric("平均耗时", "45s")
-    with metric_col2:
-        st.metric("逻辑深度", "3级")
-    
-    st.write("---")
     st.subheader("🛠️ 技术栈")
     st.caption("Framework: LangGraph 1.x")
     st.caption("Backend: FastAPI (Async)")
-    st.caption("Infrastructure: ReAct Architecture")
+    st.caption("Architecture: Planner-Researcher-Reviewer")
 
 # 3. 主界面布局
 st.title("🔍 企业级多智能体数据洞察助手")
@@ -155,8 +147,10 @@ if st.button("🚀 启动多智能体协作分析"):
                 st.write(snippet)
 
     st.write("---")
-    cols = st.columns(4)
+    review_score = data.get("review_score")
+    cols = st.columns(5)
     cols[0].write(f"⏱️ **总耗时**: {int(end_time - start_time)}s")
     cols[1].write(f"🔄 **迭代次数**: {data['steps']} 轮")
-    cols[2].write(f"📏 **字数统计**: {len(data['report'])} 字")
-    cols[3].write(f"🔗 **数据源**: Tavily Web Search")
+    cols[2].write(f"🧐 **评审评分**: {f'{review_score}/10' if review_score is not None else '—'}")
+    cols[3].write(f"📏 **字数统计**: {len(data['report'])} 字")
+    cols[4].write(f"🔗 **数据源**: Tavily Web Search")

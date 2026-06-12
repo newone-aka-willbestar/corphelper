@@ -28,6 +28,7 @@ class ResearchState(TypedDict):
     content: Annotated[List[str], operator.add]
     report: str
     review_feedback: str
+    review_score: int
     steps: int
 
 # 2. 构建状态机

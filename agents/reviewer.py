@@ -13,6 +13,7 @@ _MAX_ITER_STEPS = 6  # 与 graph.route_after_review 的安全阀保持一致
 async def reviewer_node(state):
     steps = state.get("steps", 0)
     material = "".join(state.get("content", []))
+    score = None
 
     # 仍有迭代空间时执行 LLM 质量评审；达到上限则跳过评审直接成稿，保证流程必有产出
     if steps < _MAX_ITER_STEPS:
@@ -32,13 +33,13 @@ async def reviewer_node(state):
             score = int(verdict.get("score", 10))
             feedback = str(verdict.get("feedback", "")).strip()
         except Exception:
-            # 评分解析失败时放行成稿，避免格式问题导致流程卡死
-            score, feedback = 10, ""
+            # 评分解析失败时放行成稿（不记录伪造的分数），避免格式问题导致流程卡死
+            score, feedback = None, ""
 
-        if score < _SCORE_THRESHOLD:
+        if score is not None and score < _SCORE_THRESHOLD:
             if not feedback or feedback == "合格":
                 feedback = "素材缺乏数据支撑与案例，请补充。"
-            return {"review_feedback": feedback, "steps": steps + 1}
+            return {"review_feedback": feedback, "review_score": score, "steps": steps + 1}
 
     prompt = f"""请根据以下素材，撰写一份专业、结构清晰的行业深度研报：
 主题：{state['topic']}
@@ -46,8 +47,11 @@ async def reviewer_node(state):
 要求：包含背景、现状、趋势、案例、风险、结论。"""
 
     res = await _write_llm([SystemMessage(content=prompt)])
-    return {
+    result = {
         "report": res.content,
         "review_feedback": "合格",
         "steps": steps + 1
     }
+    if score is not None:
+        result["review_score"] = score
+    return result
