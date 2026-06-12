@@ -42,7 +42,7 @@ with st.sidebar:
     
     st.write("---")
     st.subheader("🛠️ 技术栈")
-    st.caption("Framework: LangGraph 0.3")
+    st.caption("Framework: LangGraph 1.x")
     st.caption("Backend: FastAPI (Async)")
     st.caption("Infrastructure: ReAct Architecture")
 

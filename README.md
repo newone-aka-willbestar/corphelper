@@ -7,7 +7,8 @@
 ![FastAPI](https://img.shields.io/badge/Backend-FastAPI-009688.svg)
 ![Redis](https://img.shields.io/badge/Cache-Redis-DC382D.svg)
 ![Docker](https://img.shields.io/badge/Deploy-Docker_Compose-2496ED.svg)
-![Tests](https://img.shields.io/badge/Tests-20_passed-brightgreen.svg)
+[![Tests](https://github.com/newone-aka-willbestar/LangGraph-Enterprise-Data-Insight-Agent/actions/workflows/tests.yml/badge.svg)](https://github.com/newone-aka-willbestar/LangGraph-Enterprise-Data-Insight-Agent/actions/workflows/tests.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ## 📌 项目定位
 
@@ -175,3 +176,7 @@ pytest tests/ -v                      # 或 make test
 ## 🗺️ 改造记录
 
 本项目经历了从演示原型到生产级系统的完整改造（问题诊断 → 逻辑修复 → 上线加固 → 运维完善，共 35 项），完整过程详见 [ROADMAP.md](ROADMAP.md)。
+
+## 📄 License
+
+本项目基于 [MIT License](LICENSE) 开源。
