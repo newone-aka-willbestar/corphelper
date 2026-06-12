@@ -19,6 +19,9 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379
       - ALLOWED_ORIGINS=http://localhost:8501
+      - CHECKPOINT_DB=/app/data/checkpoints.sqlite
+    volumes:
+      - checkpoint_data:/app/data
     depends_on:
       redis:
         condition: service_healthy
@@ -41,3 +44,4 @@ services:
 
 volumes:
   redis_data:
+  checkpoint_data:

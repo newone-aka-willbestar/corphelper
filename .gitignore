@@ -1,6 +1,8 @@
 .env
 venv/
 docs/*.pdf
+*.sqlite
+*.sqlite-*
 __pycache__/
 *.pyc
 *.pyo

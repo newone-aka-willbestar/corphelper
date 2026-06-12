@@ -54,8 +54,11 @@ graph TD
 - **全异步链路**：`POST /research` 立即返回 `job_id`，后台 `asyncio` 任务通过 `astream(stream_mode="updates")` 逐节点推送执行阶段，前端轮询实时展示当前正在工作的 Agent；三个 Agent 节点均为 `async def` + `ainvoke`，不占用线程池。
 - **Redis 任务存储**：任务状态以 Redis Hash 存储（`HSET` 按字段原子更新，无读-改-写竞态），TTL 1 小时自动过期，支持多 worker 部署下的跨进程轮询；启动时主动探测 Redis 连通性，连不上直接拒绝启动。
 - **容错与限流**：LLM / Tavily 调用统一 `tenacity` 指数退避重试（3 次）；基于 Redis ZSET 的 IP 级滑动窗口限流（5 次/分钟，多 worker 全局共享计数）；可选 `X-API-Key` 认证（设置 `API_KEY` 环境变量即自动生效）。
+- **断点续跑（Checkpointer）**：LangGraph SQLite 检查点持久化每个节点的执行状态（`thread_id` = 任务 ID）。进程崩溃或重启后，启动钩子自动扫描未完成任务并从最近检查点继续执行（Redis NX 锁保证多 worker 下每个任务只被一个进程接管），无需引入独立任务队列即可获得任务可靠性。
+- **SSE 实时推送**：`GET /research/{job_id}/stream` 基于 Redis Pub/Sub 推送逐节点进度事件和最终结果，供 API 消费方使用（自带 keepalive 与断线兜底回查）；Streamlit 前端保持轮询（与其脚本式执行模型更匹配）。
 - **可观测性**：结构化 JSON 日志（含 `request_id` / `job_id` / 耗时 / 节点名）；每日 Token 用量统计与预算告警（`DAILY_TOKEN_BUDGET`）；可选 LangSmith 链路追踪；`/health` 实质化健康检查（探测 Redis + 关键密钥配置）。
-- **测试覆盖**：24 个单元测试全量 mock LLM 与搜索接口（Redis 用 fakeredis 模拟），零外部依赖，秒级跑完。
+- **评分器离线评测**：`evals/` 内置人工标注样本集，`python -m evals.run_eval` 用与线上完全相同的提示词跑评分器，输出各阈值下的判定准确率，用真实数据校准 `_SCORE_THRESHOLD` 而非拍脑袋。
+- **测试覆盖**：28 个单元/集成测试全量 mock LLM 与搜索接口（Redis 用 fakeredis 模拟），含"进程重启后从检查点续跑"的完整图执行测试，零外部依赖，秒级跑完。
 
 ## 📂 项目结构
 
@@ -66,8 +69,9 @@ graph TD
 │   ├── researcher.py     # 联网调研：Tavily 搜索 + LLM 总结
 │   └── reviewer.py       # 质量评审：LLM 三维度评分，打回 / 成稿
 ├── backend/
-│   └── main.py           # FastAPI：异步任务、Redis、限流、认证、日志
-├── tests/                # 20 个单元测试（agents / api / graph 路由）
+│   └── main.py           # FastAPI：异步任务、断点续跑、SSE、限流、认证、日志
+├── evals/                # 评分器离线评测：标注样本集 + 阈值校准脚本
+├── tests/                # 28 个单元/集成测试（agents / api / graph / checkpoint）
 ├── graph.py              # LangGraph 状态机定义与条件路由
 ├── app.py                # Streamlit 前端：轮询展示协作进度
 ├── Dockerfile            # Python 3.11-slim + gunicorn 多 worker
@@ -123,6 +127,7 @@ make frontend                   # 即 streamlit run app.py
 |------|------|------|
 | `POST` | `/research` | 提交调研主题（≤500 字），立即返回 `{job_id, status}` |
 | `GET` | `/research/{job_id}` | 轮询任务：`pending / running（含 stage）/ done / error` |
+| `GET` | `/research/{job_id}/stream` | SSE 实时进度流：逐节点 `stage` 事件 + 最终 `done/error` 事件 |
 | `GET` | `/health` | 健康检查：Redis 连通性 + 密钥配置状态 |
 
 ```bash
@@ -135,6 +140,13 @@ curl -X POST http://localhost:8000/research \
 # 轮询结果
 curl http://localhost:8000/research/<job_id>
 # 完成后返回 report、plan、迭代轮次 steps、评审评分 review_score（0-10）、耗时 duration_ms
+
+# 或 SSE 实时订阅进度（逐节点推送，结束自动断开）
+curl -N http://localhost:8000/research/<job_id>/stream
+# data: {"type": "stage", "stage": "planner"}
+# data: {"type": "stage", "stage": "researcher"}
+# ...
+# data: {"type": "done", "report": "...", "review_score": 8, ...}
 ```
 
 > 若设置了 `API_KEY` 环境变量，以上请求需携带请求头 `X-API-Key: <你的密钥>`。
@@ -146,6 +158,7 @@ curl http://localhost:8000/research/<job_id>
 | `DEEPSEEK_API_KEY` | ✅ | — | DeepSeek 模型密钥 |
 | `TAVILY_API_KEY` | ✅ | — | Tavily 联网搜索密钥 |
 | `REDIS_URL` | | `redis://localhost:6379` | Redis 连接地址 |
+| `CHECKPOINT_DB` | | `checkpoints.sqlite` | LangGraph 检查点数据库路径（断点续跑） |
 | `ALLOWED_ORIGINS` | | `http://localhost:8501` | CORS 白名单，逗号分隔 |
 | `BACKEND_URL` | | `http://localhost:8000` | 前端访问的后端地址 |
 | `API_KEY` | | 不启用 | 设置后开启 API Key 认证 |
@@ -162,7 +175,8 @@ pytest tests/ -v                      # 或 make test
 | 测试文件 | 覆盖内容 | 用例数 |
 |----------|----------|--------|
 | `tests/test_agents.py` | Planner 解析与降级、Researcher 方向轮换、Reviewer 评分打回/成稿/兜底 | 9 |
-| `tests/test_api.py` | 输入校验、Redis 滑动窗口限流、job Hash 原子更新 | 10 |
+| `tests/test_api.py` | 输入校验、Redis 滑动窗口限流、job Hash 原子更新、SSE 端点、恢复锁 | 13 |
+| `tests/test_checkpoint.py` | 完整图执行 + 模拟进程重启后从检查点续跑 | 1 |
 | `tests/test_graph.py` | 条件路由（评审通过退出 / 打回继续 / 安全阀触发） | 5 |
 
 全部测试 mock 外部接口（LLM / 搜索 / Redis 均为模拟实现），无需任何 API 密钥或网络连接。

@@ -10,6 +10,31 @@ _SCORE_THRESHOLD = 7
 _MAX_ITER_STEPS = 6  # 与 graph.route_after_review 的安全阀保持一致
 
 
+def _build_eval_prompt(topic: str, material: str) -> str:
+    return f"""你是一个严格的研报质量评审。请从三个维度评估以下调研素材：
+1. 数据支撑：是否有具体数字、统计来源
+2. 案例丰富度：是否有公司、产品或政策实例
+3. 风险与趋势预测：是否覆盖未来变量和不确定性
+
+主题：{topic}
+素材：{material}
+
+返回 JSON：{{"score": 0到10的整数综合分, "feedback": "若不合格，给研究员的具体补充建议"}}"""
+
+
+async def evaluate_material(topic: str, material: str) -> tuple[int | None, str]:
+    """对调研素材打分。返回 (score, feedback)；评分输出无法解析时返回 (None, "")。
+
+    同时供 reviewer 节点和 evals/run_eval.py 离线评测使用，保证线上线下用同一套提示词。
+    """
+    res = await _evaluate_llm([SystemMessage(content=_build_eval_prompt(topic, material))])
+    try:
+        verdict = extract_json(res.content)
+        return int(verdict.get("score", 10)), str(verdict.get("feedback", "")).strip()
+    except Exception:
+        return None, ""
+
+
 async def reviewer_node(state):
     steps = state.get("steps", 0)
     material = "".join(state.get("content", []))
@@ -17,24 +42,8 @@ async def reviewer_node(state):
 
     # 仍有迭代空间时执行 LLM 质量评审；达到上限则跳过评审直接成稿，保证流程必有产出
     if steps < _MAX_ITER_STEPS:
-        eval_prompt = f"""你是一个严格的研报质量评审。请从三个维度评估以下调研素材：
-1. 数据支撑：是否有具体数字、统计来源
-2. 案例丰富度：是否有公司、产品或政策实例
-3. 风险与趋势预测：是否覆盖未来变量和不确定性
-
-主题：{state['topic']}
-素材：{material}
-
-返回 JSON：{{"score": 0到10的整数综合分, "feedback": "若不合格，给研究员的具体补充建议"}}"""
-
-        res = await _evaluate_llm([SystemMessage(content=eval_prompt)])
-        try:
-            verdict = extract_json(res.content)
-            score = int(verdict.get("score", 10))
-            feedback = str(verdict.get("feedback", "")).strip()
-        except Exception:
-            # 评分解析失败时放行成稿（不记录伪造的分数），避免格式问题导致流程卡死
-            score, feedback = None, ""
+        # 评分解析失败时 score 为 None，放行成稿（不记录伪造的分数），避免格式问题导致流程卡死
+        score, feedback = await evaluate_material(state["topic"], material)
 
         if score is not None and score < _SCORE_THRESHOLD:
             if not feedback or feedback == "合格":
