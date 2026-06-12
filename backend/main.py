@@ -3,11 +3,9 @@ import json
 import logging
 import os
 import uuid
-from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import date
 from time import time
-from typing import Dict, List
 
 import redis.asyncio as aioredis
 from dotenv import load_dotenv
@@ -75,17 +73,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# job 以 Redis Hash 存储：HSET 按字段原子更新，避免读-改-写竞态
 async def _job_get(job_id: str) -> dict | None:
-    raw = await redis_client.get(f"job:{job_id}")
-    return json.loads(raw) if raw else None
-
-async def _job_save(job_id: str, data: dict):
-    await redis_client.setex(f"job:{job_id}", _JOB_TTL, json.dumps(data, ensure_ascii=False))
+    raw = await redis_client.hgetall(f"job:{job_id}")
+    if not raw:
+        return None
+    return {k: json.loads(v) for k, v in raw.items()}
 
 async def _job_update(job_id: str, **fields):
-    job = await _job_get(job_id) or {}
-    job.update(fields)
-    await _job_save(job_id, job)
+    key = f"job:{job_id}"
+    await redis_client.hset(key, mapping={
+        k: json.dumps(v, ensure_ascii=False) for k, v in fields.items()
+    })
+    await redis_client.expire(key, _JOB_TTL)
 
 # ── 每日 Token 预算追踪（P-10）──────────────────────────
 _DEEPSEEK_INPUT_PRICE  = 0.14   # $ / M tokens
@@ -111,16 +111,18 @@ async def _track_daily_tokens(prompt_t: int, compl_t: int):
                        extra={"daily_tokens": total, "budget": budget})
 
 # ── 速率限制（P-03）─────────────────────────────────────
+# Redis ZSET 滑动窗口：多 worker 部署时限流计数全局共享
 _RATE_LIMIT  = 5
 _RATE_WINDOW = 60
-_rate_store: Dict[str, List[float]] = defaultdict(list)
 
-def _check_rate_limit(ip: str):
+async def _check_rate_limit(ip: str):
     now = time()
-    _rate_store[ip] = [t for t in _rate_store[ip] if now - t < _RATE_WINDOW]
-    if len(_rate_store[ip]) >= _RATE_LIMIT:
+    key = f"rate:{ip}"
+    await redis_client.zremrangebyscore(key, 0, now - _RATE_WINDOW)
+    if await redis_client.zcard(key) >= _RATE_LIMIT:
         raise HTTPException(429, f"请求过于频繁，每分钟最多 {_RATE_LIMIT} 次")
-    _rate_store[ip].append(now)
+    await redis_client.zadd(key, {f"{now}:{uuid.uuid4().hex[:6]}": now})
+    await redis_client.expire(key, _RATE_WINDOW)
 
 # ── API Key 认证（P-09）─────────────────────────────────
 async def _verify_api_key(x_api_key: str | None = Header(default=None)):
@@ -207,10 +209,10 @@ async def _run_research(job_id: str, topic: str):
 @app.post("/research", dependencies=[Depends(_verify_api_key)])
 async def start_research(request: Request, body: ResearchRequest):
     ip = request.client.host
-    _check_rate_limit(ip)
+    await _check_rate_limit(ip)
 
     job_id = str(uuid.uuid4())
-    await _job_save(job_id, {"status": "pending", "stage": "waiting", "created_at": time()})
+    await _job_update(job_id, status="pending", stage="waiting", created_at=time())
     asyncio.create_task(_run_research(job_id, body.topic))
 
     logger.info("任务已创建: %s", body.topic, extra={"job_id": job_id, "ip": ip})

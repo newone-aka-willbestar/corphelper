@@ -44,26 +44,27 @@ graph TD
 
 ### Agent 编排层
 
-- **闭环反思架构（Self-Correction Loop）**：通过 LangGraph Conditional Edges 实现 Reviewer 节点对调研素材的质量校验。若深度不足，自动触发"打回机制"并注入反馈意见，引导 Researcher 换方向重新检索；`steps >= 6` 作为兜底安全阀，防止无限迭代消耗 Token。
+- **闭环反思架构（Self-Correction Loop）**：Reviewer 节点用 LLM 从「数据支撑 / 案例丰富度 / 风险预测」三个维度对调研素材打分（0-10 分，低温度保证评分稳定）。低于阈值时自动打回并附带具体补充建议，引导 Researcher 换方向重新检索；`steps >= 6` 作为兜底安全阀，达到上限强制成稿，保证流程必有产出。
 - **状态原子化管理（Atomic State）**：利用 `StateGraph` 与 `operator.add` 实现状态的非破坏性增量更新，多轮搜索素材自动合并，保证长文生成的上下文连贯性。
 - **调研方向轮换**：Researcher 按迭代轮次轮换使用 Planner 拆解出的多个调研方向，避免重复检索同一角度。
-- **模型适配**：全线适配国产 DeepSeek-V3 模型，在保证逻辑推理强度的同时大幅降低推理成本。
+- **模型适配**：全线适配国产 DeepSeek-V3 模型，统一 LLM 工厂按角色差异化 temperature（规划 0.2 / 评分 0.1 / 撰写 0.6），在保证逻辑推理强度的同时大幅降低推理成本。
 
 ### 工程化层
 
-- **异步任务模式**：`POST /research` 立即返回 `job_id`，后台 `asyncio` 任务通过 `astream(stream_mode="updates")` 逐节点推送执行阶段，前端轮询实时展示当前正在工作的 Agent。
-- **Redis 任务存储**：任务状态以 TTL 1 小时存入 Redis，支持多 worker 部署下的跨进程轮询；启动时主动探测 Redis 连通性，连不上直接拒绝启动。
-- **容错与限流**：LLM / Tavily 调用统一 `tenacity` 指数退避重试（3 次）；IP 级滑动窗口限流（5 次/分钟）；可选 `X-API-Key` 认证（设置 `API_KEY` 环境变量即自动生效）。
+- **全异步链路**：`POST /research` 立即返回 `job_id`，后台 `asyncio` 任务通过 `astream(stream_mode="updates")` 逐节点推送执行阶段，前端轮询实时展示当前正在工作的 Agent；三个 Agent 节点均为 `async def` + `ainvoke`，不占用线程池。
+- **Redis 任务存储**：任务状态以 Redis Hash 存储（`HSET` 按字段原子更新，无读-改-写竞态），TTL 1 小时自动过期，支持多 worker 部署下的跨进程轮询；启动时主动探测 Redis 连通性，连不上直接拒绝启动。
+- **容错与限流**：LLM / Tavily 调用统一 `tenacity` 指数退避重试（3 次）；基于 Redis ZSET 的 IP 级滑动窗口限流（5 次/分钟，多 worker 全局共享计数）；可选 `X-API-Key` 认证（设置 `API_KEY` 环境变量即自动生效）。
 - **可观测性**：结构化 JSON 日志（含 `request_id` / `job_id` / 耗时 / 节点名）；每日 Token 用量统计与预算告警（`DAILY_TOKEN_BUDGET`）；可选 LangSmith 链路追踪；`/health` 实质化健康检查（探测 Redis + 关键密钥配置）。
-- **测试覆盖**：20 个单元测试全量 mock LLM 与搜索接口，零外部依赖，约 4 秒跑完。
+- **测试覆盖**：24 个单元测试全量 mock LLM 与搜索接口（Redis 用 fakeredis 模拟），零外部依赖，秒级跑完。
 
 ## 📂 项目结构
 
 ```
 ├── agents/
+│   ├── common.py         # 共享 LLM 工厂、重试封装、JSON 提取
 │   ├── planner.py        # 任务拆解：生成多个调研方向
 │   ├── researcher.py     # 联网调研：Tavily 搜索 + LLM 总结
-│   └── reviewer.py       # 质量评审：打回补充 / 生成最终研报
+│   └── reviewer.py       # 质量评审：LLM 三维度评分，打回 / 成稿
 ├── backend/
 │   └── main.py           # FastAPI：异步任务、Redis、限流、认证、日志
 ├── tests/                # 20 个单元测试（agents / api / graph 路由）
@@ -160,18 +161,18 @@ pytest tests/ -v                      # 或 make test
 
 | 测试文件 | 覆盖内容 | 用例数 |
 |----------|----------|--------|
-| `tests/test_agents.py` | Planner 解析与降级、Researcher 方向轮换、Reviewer 打回/生成 | 7 |
-| `tests/test_api.py` | 输入校验、速率限制（允许/拦截/窗口重置） | 8 |
+| `tests/test_agents.py` | Planner 解析与降级、Researcher 方向轮换、Reviewer 评分打回/成稿/兜底 | 9 |
+| `tests/test_api.py` | 输入校验、Redis 滑动窗口限流、job Hash 原子更新 | 10 |
 | `tests/test_graph.py` | 条件路由（评审通过退出 / 打回继续 / 安全阀触发） | 5 |
 
-全部测试 mock 外部接口，无需任何 API 密钥或网络连接。
+全部测试 mock 外部接口（LLM / 搜索 / Redis 均为模拟实现），无需任何 API 密钥或网络连接。
 
 ## 📊 性能数据
 
 - 平均迭代轮次：1.8 轮
 - 研报字数：1500 – 3000 字（视主题复杂度而定）
-- 核心准确率：通过评审打回机制，内容事实准确度较单体 Prompt 提升约 32%
 - 任务提交响应：< 100ms（异步模式，后台执行约 45s）
+- 事实可靠性：评审打分 + 打回机制强制多调研方向交叉检索，降低单一来源带来的幻觉与偏差风险
 
 ## 🗺️ 改造记录
 
